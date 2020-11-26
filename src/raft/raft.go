@@ -163,8 +163,8 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
-	term        int  // 当前term，用来给server更新其currentTerm字段
-	voteGranted bool // 该candidate是否获得投票
+	Term        int  // 当前term，用来给server更新其currentTerm字段
+	VoteGranted bool // 该candidate是否获得投票
 }
 
 //
@@ -178,8 +178,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	// 告知candidate不投票并告知其更新term
 	if rf.currentTerm > args.Term {
-		reply.voteGranted = false
-		reply.term = rf.currentTerm
+		reply.VoteGranted = false
+		reply.Term = rf.currentTerm
 		return
 	}
 
@@ -201,23 +201,46 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			rf.voteFor = args.CandidateId
 			rf.refreshExpireTime()
 
-			reply.voteGranted = true
-			reply.term = rf.currentTerm
+			reply.VoteGranted = true
+			reply.Term = rf.currentTerm
 			return
 		}
 	}
 }
 
-func (rf *Raft) refreshExpireTime() {
-	switch rf.state {
-	case CANDIDATE, FOLLOWER:
-		// 设置一个200-300ms的心跳超时时间
-		rf.expireTime = time.Now().Add(time.Duration(200+rand.Intn(100)) * time.Millisecond)
-	case LEADER:
-		// leader每100ms发送心跳包
-		rf.expireTime = time.Now().Add(time.Duration(100) * time.Millisecond)
+type AppendEntriesArgs struct {
+	Term         int
+	LeaderId     int
+	PrevLogIndex int
+	PrevLogTerm  int
+	Entries      []LogEntry
+}
+
+type AppendEntriesReply struct {
+	Term    int
+	Success bool
+}
+
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	if args.Term < rf.currentTerm {
+		reply.Success = false
+		reply.Term = rf.currentTerm
+		return
 	}
 
+	// 发送心跳包
+	// 处理老leader和candidate
+	fmt.Printf("heartbeat from server-%d to server-%d, server-%d: %s->FOLLOWER\n",
+		args.LeaderId, rf.me, rf.me, rf.state)
+	rf.state = FOLLOWER
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+		rf.voteFor = -1
+	}
+	rf.refreshExpireTime()
+	reply.Term = rf.currentTerm
+	reply.Success = true
+	return
 }
 
 //
@@ -251,6 +274,11 @@ func (rf *Raft) refreshExpireTime() {
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	return ok
+}
+
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
 }
 
@@ -361,27 +389,44 @@ func (rf *Raft) tickle() {
 	}
 }
 
-type AppendEntriesArgs struct {
-	Term         int
-	LeaderId     int
-	PrevLogIndex int
-	PrevLogTerm  int
-	Entries      []LogEntry
-}
-
-type AppendEntriesReply struct {
-	Term    int
-	Success bool
-}
-
 func (rf *Raft) heartbeat() {
 	rf.refreshExpireTime()
 	for i, _ := range rf.peers {
 		if i == rf.me {
 			continue
 		}
-
+		args := &AppendEntriesArgs{
+			Term:     rf.currentTerm,
+			LeaderId: rf.me,
+			Entries:  nil,
+		}
+		go func(server int) {
+			reply := &AppendEntriesReply{}
+			ok := rf.sendAppendEntries(server, args, reply)
+			if !ok {
+				return
+			}
+			// 收到一个新leader的响应
+			if reply.Term > rf.currentTerm {
+				rf.state = FOLLOWER
+				rf.voteFor = -1
+				rf.currentTerm = reply.Term
+				rf.refreshExpireTime()
+			}
+		}(i)
 	}
+}
+
+func (rf *Raft) refreshExpireTime() {
+	switch rf.state {
+	case CANDIDATE, FOLLOWER:
+		// 设置一个200-300ms的心跳超时时间
+		rf.expireTime = time.Now().Add(time.Duration(200+rand.Intn(100)) * time.Millisecond)
+	case LEADER:
+		// leader每100ms发送心跳包
+		rf.expireTime = time.Now().Add(time.Duration(100) * time.Millisecond)
+	}
+
 }
 
 func (rf *Raft) requestVote() {
@@ -418,18 +463,18 @@ func (rf *Raft) requestVote() {
 			defer rf.mu.Unlock()
 
 			// 处理从peer得到的reply
-			if reply.term > rf.currentTerm {
+			if reply.Term > rf.currentTerm {
 				// local的term低于peer，应该为follower
-				rf.currentTerm = reply.term
+				rf.currentTerm = reply.Term
 				rf.state = FOLLOWER
 				rf.voteFor = -1
 				return
 			}
 
 			// 获取peer的一票
-			if reply.voteGranted && rf.state == CANDIDATE {
+			if reply.VoteGranted && rf.state == CANDIDATE {
 				fmt.Printf("server-%d in term %d got a vote from server-%d in term %d.Now has %d votes in total\n",
-					rf.me, rf.currentTerm, i, reply.term, int(atomic.LoadInt32(&count))+1)
+					rf.me, rf.currentTerm, i, reply.Term, int(atomic.LoadInt32(&count))+1)
 				if int(atomic.AddInt32(&count, 1)) > len(rf.peers)/2 {
 					fmt.Printf("server-%d CANDIDATE->LEADER in term %d\n", rf.me, rf.currentTerm)
 					rf.state = LEADER
