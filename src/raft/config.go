@@ -8,17 +8,21 @@ package raft
 // test with the original before submitting.
 //
 
-import "../labrpc"
-import "log"
-import "sync"
-import "testing"
-import "runtime"
-import "math/rand"
-import crand "crypto/rand"
-import "math/big"
-import "encoding/base64"
-import "time"
-import "fmt"
+import (
+	"log"
+	"math/rand"
+	"runtime"
+	"sync"
+	"testing"
+
+	"../labrpc"
+
+	crand "crypto/rand"
+	"encoding/base64"
+	"fmt"
+	"math/big"
+	"time"
+)
 
 func randstring(n int) string {
 	b := make([]byte, 2*n)
@@ -370,6 +374,7 @@ func (cfg *config) nCommitted(index int) (int, interface{}) {
 
 		cfg.mu.Lock()
 		cmd1, ok := cfg.logs[i][index]
+		// DPrintf("nCommitted cmd1[%d] index[%d]", cmd1, index)
 		cfg.mu.Unlock()
 
 		if ok {
@@ -442,14 +447,14 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			}
 			cfg.mu.Unlock()
 			if rf != nil {
-				index1, _, ok := rf.Start(cmd)
+				index1, _, ok := rf.Start(cmd) // return index, term, isLeader
 				if ok {
 					index = index1
 					break
 				}
 			}
 		}
-
+		// 找到leader
 		if index != -1 {
 			// somebody claimed to be the leader and to have
 			// submitted our command; wait a while for agreement.
@@ -463,12 +468,14 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 						return index
 					}
 				}
+				// DPrintf("nd[%d] cmd1[%d], cmd[%d]", nd, cmd1, cmd)
 				time.Sleep(20 * time.Millisecond)
 			}
 			if retry == false {
 				cfg.t.Fatalf("one(%v) failed to reach agreement", cmd)
 			}
 		} else {
+			// DPrintf("index[-1]")
 			time.Sleep(50 * time.Millisecond)
 		}
 	}
